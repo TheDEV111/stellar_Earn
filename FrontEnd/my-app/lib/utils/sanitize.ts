@@ -1,8 +1,22 @@
-import * as DOMPurify from 'dompurify';
+import DOMPurify from 'dompurify';
 
 interface SanitizeConfig {
   ALLOWED_TAGS: string[];
   ALLOWED_ATTR: string[];
+  ALLOW_DATA_ATTR: boolean;
+  FORCE_BODY?: boolean;
+}
+
+const isBrowser = typeof window !== 'undefined';
+
+// Enforce rel="noopener noreferrer" on any anchor that carries a target attribute.
+// This prevents tab-napping attacks on links opened in a new context.
+if (isBrowser) {
+  DOMPurify.addHook('afterSanitizeAttributes', (node: Element) => {
+    if (node.tagName === 'A' && node.hasAttribute('target')) {
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
 }
 
 const RICH_CONFIG: SanitizeConfig = {
@@ -30,24 +44,23 @@ const RICH_CONFIG: SanitizeConfig = {
     'hr',
   ],
   ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
+  ALLOW_DATA_ATTR: false,
+  FORCE_BODY: false,
 };
 
 const BASIC_CONFIG: SanitizeConfig = {
   ALLOWED_TAGS: [],
   ALLOWED_ATTR: [],
+  ALLOW_DATA_ATTR: false,
 };
 
-const purify = DOMPurify.default;
-
-const createSanitizer = (config: SanitizeConfig) => (dirty: string) => {
-  if (!dirty) return '';
-  return purify.sanitize(dirty, {
-    ALLOWED_TAGS: config.ALLOWED_TAGS,
-    ALLOWED_ATTR: config.ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
-    ADD_ATTR: ['target'],
-  });
-};
+const createSanitizer =
+  (config: SanitizeConfig) =>
+  (dirty: string): string => {
+    if (!dirty) return '';
+    if (!isBrowser) return '';
+    return DOMPurify.sanitize(dirty, config) as string;
+  };
 
 export const sanitizeHtml = createSanitizer(RICH_CONFIG);
 
@@ -57,24 +70,29 @@ export const sanitizeText = createSanitizer(BASIC_CONFIG);
 
 export const sanitizeUrl = (url: string): string => {
   if (!url) return '';
-  const clean = purify.sanitize(url, {
+  if (!isBrowser) return '';
+  const clean = DOMPurify.sanitize(url, {
     ALLOWED_TAGS: [],
     ALLOWED_ATTR: [],
-  });
-  const parsed = new URL(clean, 'http:// example.com');
-  if (
-    parsed.protocol !== 'http:' &&
-    parsed.protocol !== 'https:' &&
-    parsed.protocol !== 'mailto:'
-  ) {
+  }) as string;
+  try {
+    const parsed = new URL(clean);
+    if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+      return '';
+    }
+    return clean;
+  } catch {
     return '';
   }
-  return clean;
 };
 
+// Pure-string implementation — no DOM needed, safe in SSR and browser alike.
 export const escapeHtml = (dirty: string): string => {
   if (!dirty) return '';
-  const div = document.createElement('div');
-  div.textContent = dirty;
-  return div.innerHTML;
+  return dirty
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 };

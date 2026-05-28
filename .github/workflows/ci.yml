@@ -5,15 +5,51 @@ on:
     branches: [ main, master ]
     paths:
       - "contracts/**"
+      - "scripts/check-contract-changelog-discipline.js"
+      - "scripts/check-orphaned-scripts.js"
+      - "tests/**"
+      - "package.json"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main, master ]
     paths:
       - "contracts/**"
+      - "scripts/check-contract-changelog-discipline.js"
+      - "scripts/check-orphaned-scripts.js"
+      - "tests/**"
+      - "package.json"
       - ".github/workflows/ci.yml"
 
 jobs:
+  repo-policy-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Run lightweight repository tests
+        run: npm test
+
+      - name: Run orphaned-scripts detector
+        run: node scripts/check-orphaned-scripts.js
+
+      - name: Enforce contract changelog discipline
+        env:
+          CHANGELOG_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHANGELOG_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CHANGELOG_PR_TITLE: ${{ github.event.pull_request.title || github.event.head_commit.message }}
+          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body || '' }}
+        run: node scripts/check-contract-changelog-discipline.js
+
   build-and-test:
+    needs: repo-policy-checks
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -33,6 +69,21 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      - name: Check for default Rust toolchain (CI safeguard)
+        run: |
+          set -e
+          if ! command -v rustup &> /dev/null; then
+            echo "❌ rustup not found."
+            exit 1
+          fi
+          DEFAULT_TOOLCHAIN=$(rustup show active-toolchain 2>/dev/null | cut -d' ' -f1)
+          if [[ -z "$DEFAULT_TOOLCHAIN" ]]; then
+            echo "❌ No default toolchain set. Running 'rustup default stable'."
+            rustup default stable
+          else
+            echo "Found default toolchain: $DEFAULT_TOOLCHAIN"
+          fi
+          
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -70,21 +121,3 @@ jobs:
 
       - name: Build WASM
         run: cargo build --release --target wasm32-unknown-unknown
-
-    orphaned-scripts-check:
-      runs-on: ubuntu-latest
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-
-        - name: Set up Node.js
-          uses: actions/setup-node@v4
-          with:
-            node-version: '18'
-
-        - name: Install dependencies (if any)
-          run: |
-            if [ -f package.json ]; then npm ci || true; fi
-
-        - name: Run orphaned-scripts detector
-          run: node scripts/check-orphaned-scripts.js
